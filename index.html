@@ -290,7 +290,7 @@ async function fetchSheetRows() {
     showStatus(`Network error loading ${CURRENT_SHEET}: ${err.message}. Trying local fallback...`, true);
     // try local fallback immediately
     try {
-      const localResp = await fetch(`gs-${CURRENT_SHEET}.json`);
+      const localResp = await fetch(`files/gs-${CURRENT_SHEET}.json`);
       if (localResp.ok) {
         const localText = await localResp.text();
         const data = parseSheetJson(localText);
@@ -308,7 +308,7 @@ async function fetchSheetRows() {
     showStatus(`Unable to load sheet ${CURRENT_SHEET}: ${response.status}. Trying local fallback...`, true);
     // try local fallback
     try {
-      const localResp = await fetch(`gs-${CURRENT_SHEET}.json`);
+      const localResp = await fetch(`files/gs-${CURRENT_SHEET}.json`);
       if (localResp.ok) {
         const localText = await localResp.text();
         const data = parseSheetJson(localText);
@@ -331,7 +331,7 @@ async function fetchSheetRows() {
     showStatus(`Failed to parse ${CURRENT_SHEET} sheet response. Trying local fallback...`, true);
     // try local fallback file
     try {
-      const localResp = await fetch(`gs-${CURRENT_SHEET}.json`);
+      const localResp = await fetch(`files/gs-${CURRENT_SHEET}.json`);
       if (localResp.ok) {
         const localText = await localResp.text();
         data = parseSheetJson(localText);
@@ -348,7 +348,7 @@ async function fetchSheetRows() {
   if (!data.table || !Array.isArray(data.table.rows) || data.table.rows.length <= 1) {
     console.log('Live sheet has no data, trying local fallback');
     try {
-      const localResp = await fetch(`gs-${CURRENT_SHEET}.json`);
+      const localResp = await fetch(`files/gs-${CURRENT_SHEET}.json`);
       if (localResp.ok) {
         const localText = await localResp.text();
         data = parseSheetJson(localText);
