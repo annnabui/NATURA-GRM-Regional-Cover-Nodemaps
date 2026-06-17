@@ -1,0 +1,834 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NATURA GRM Cover Nodemaps</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #0b1020;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    gap: 5em;
+  }
+  /* Square canvas sized to the A4 width. */
+  #map {
+    position: relative;
+    background: #BDDFFF;
+    width: min(100vw, 100vh);
+    height: min(100vw, 100vh);
+  }
+  #map::after {
+    content: '';
+    position: absolute;
+    top: 0.67%;
+    bottom: 0.67%;
+    left: 0.95%;
+    right: 0.95%;
+    pointer-events: none;
+  }
+  .node-label {
+    color: #5979F8;
+    font-family: ibm-plex-mono, monospace, sans-serif;
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.1;
+    letter-spacing: -0.035em;
+    white-space: normal;
+    /* text-shadow: 0 0 4px rgba(0,0,0,0.6); */
+    pointer-events: none;
+    transform: translate(14px);
+    padding-top: 8px;
+  }
+
+  .location-label-text {
+    min-width: 100px;
+    display: inline-block;
+  }
+
+  #toolbar {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 12px;
+    margin: 20px;
+    max-width: min(100vw, 100vh);
+    color: #ffffff;
+  }
+
+  .sheets {
+    display: flex;
+    flex-direction: column;
+    width: 280px;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 6px;
+  }
+
+  .sheet-btn {
+    background: rgba(255,255,255,0.08);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.12);
+    padding: 6px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+
+  .sheet-btn.active {
+    background: rgb(235, 235, 235);
+    color:#0b1020;
+  }
+
+  #status-message {
+    width: fit-content;
+    padding: 10px 12px;
+    margin: 21px;
+    font-size: 12px;
+    color: #0f172a;
+    background: rgba(255, 255, 255, 0.9);
+    border-radius: 8px;
+  }
+
+  #status-message.is-error {
+    color: #ffdddd;
+    background: rgba(139, 0, 0, 0.75);
+  }
+
+  #toolbar label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    letter-spacing: -0.02em;
+    color: #f8fafc;
+  }
+
+  #toolbar input[type="range"] {
+    width: 200px;
+  }
+
+  #toolbar button {
+    background: rgba(255, 255, 255, 0.15);
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.24);
+    border-radius: 8px;
+    padding: 8px 14px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: background 0.2s ease;
+  }
+
+  #toolbar button:hover {
+    background: rgba(255, 255, 255, 0.28);
+  }
+</style>
+</head>
+<body>
+  <div id="map"></div>
+  <div class="wrapper">
+    <div id="status-message"></div>
+      <div id="toolbar-sheets" style="display:flex;justify-content:center;">
+        <div class="sheets">
+          <p style="color:#ffffff">Regions:</p>
+          <button class="sheet-btn active" data-sheet="Oceania">Oceania</button>
+          <button class="sheet-btn" data-sheet="Asia">Asia</button>
+          <button class="sheet-btn" data-sheet="USC">USC</button>
+          <button class="sheet-btn" data-sheet="Europe">Europe</button>
+          <button class="sheet-btn" data-sheet="MENA">MENA</button>
+          <button class="sheet-btn" data-sheet="Africa">Africa</button>
+          <button class="sheet-btn" data-sheet="LAC">LAC</button>
+        </div>
+    </div>
+    <div id="toolbar">
+      <p style="color:#ffffff">Controls</p>
+      <label>
+        Spread
+        <input id="spread-slider" type="range" min="0.5" max="2" step="0.05" value="1">
+        <span id="spread-value">1.00</span>
+      </label>
+      <button id="export-svg">Export SVG</button>
+      <button id="export-jpg">Export JPG</button>
+    </div>
+  </div>
+<script>
+/* ============================================================
+   CONFIG
+   ============================================================ */
+
+// Connection rules: every node connects to between MIN and MAX
+// other nodes, always preferring its nearest unconnected neighbor.
+const MIN_CONNECTIONS = 1;
+const MAX_CONNECTIONS = 3;
+
+// Visual style
+const LINE_WEIGHT = 1;
+const NODE_RADIUS_PX = 4;
+
+/* ------------------------------------------------------------
+   NODE DATA
+   Each node has:
+     - label: "City, Country" shown on the map
+     - lat / lng: real-world coordinates, used ONLY to drive the
+       nearest-neighbor connection logic (so the wiring still
+       reflects true geography)
+     x / y: hand-placed layout position on a 0-100 square canvas
+       matching the A4 width. These
+       control where the node actually appears, spaced out to
+       fill the page while loosely echoing real geography
+       (Perth far west, NZ far southeast, Fiji/Vanuatu/Samoa
+       cluster northeast, etc).
+
+   To relocate a node, just change its x/y. To change which
+   nodes connect to which, edit lat/lng (or MIN/MAX above).
+   ------------------------------------------------------------ */
+const SHEET_ID = '16rsBMlnR4qF6qkHOGZiNvVL9ePksEMmeBEJF7dofh80';
+const SHEET_BASE = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=`;
+let CURRENT_SHEET = 'Oceania';
+const CANVAS_WIDTH = 100;
+const CANVAS_HEIGHT = 100;
+const EXPORT_SIZE = 2100;
+
+const THEMES = {
+  Oceania: {
+    background: '#BDDFFF',
+    node: '#5979F8',
+    line: '#A4CAFF',
+    label: '#5979F8'
+  },
+  Asia: {
+    background: '#C74A4B',
+    node: '#FFCEEC',
+    line: '#DF6F9C',
+    label: '#FFCEEC'
+  },
+  USC: {
+    background: '#10837C',
+    node: '#6BE8E4',
+    line: '#33ABA7',
+    label: '#6BE8E4'
+  },
+  Europe: {
+    background: '#365AAA',
+    node: '#77D2FF',
+    line: '#168BC6',
+    label: '#77D2FF'
+  },
+  MENA: {
+    background: '#E57A2C',
+    node: '#FFEF9D',
+    line: '#F59C5B',
+    label: '#FFEF9D'
+  },
+  Africa: {
+    background: '#FFE185',
+    node: '#CA9400',
+    line: '#FFCE37',
+    label: '#CA9400'
+  },
+  LAC: {
+    background: '#C7DD78',
+    node: '#55910C',
+    line: '#98D251',
+    label: '#55910C'
+  }
+};
+
+let currentTheme = THEMES.Oceania;
+
+function getThemeForSheet(name) {
+  return THEMES[name] || THEMES.Oceania;
+}
+
+function applyTheme(name) {
+  currentTheme = getThemeForSheet(name);
+  const mapEl = document.getElementById('map');
+  if (mapEl) {
+    mapEl.style.background = currentTheme.background;
+  }
+}
+
+// Coordinates will be sourced from sheet columns (lat / lng). No hard-coded coordinates.
+
+// Region-based fallback coordinates for when geocoding fails
+const REGION_DEFAULTS = {
+  'Oceania': { lat: -15, lng: 150 },
+  'Asia': { lat: 30, lng: 100 },
+  'USC': { lat: 40, lng: -95 },
+  'Europe': { lat: 50, lng: 15 },
+  'MENA': { lat: 20, lng: 45 },
+  'Africa': { lat: 0, lng: 20 },
+  'LAC': { lat: 0, lng: -75 },
+};
+
+function parseSheetJson(text) {
+  const trimmed = text.replace(/^\s*\/\*[\s\S]*?\*\/\s*/, '');
+  const jsonText = trimmed.replace(/^google\.visualization\.Query\.setResponse\(/, '').replace(/\);?\s*$/, '');
+  return JSON.parse(jsonText);
+}
+
+function formatRowValue(cell) {
+  return cell && cell.v ? String(cell.v).trim() : '';
+}
+
+async function fetchSheetRows() {
+  const url = SHEET_BASE + encodeURIComponent(CURRENT_SHEET);
+  console.log('fetching sheet URL:', url);
+  showStatus(`Loading ${CURRENT_SHEET}...`);
+  let response;
+  try {
+    response = await fetch(url, { cache: 'no-store' });
+  } catch (err) {
+    console.error('Fetch failed:', err.message);
+    showStatus(`Network error loading ${CURRENT_SHEET}: ${err.message}. Trying local fallback...`, true);
+    // try local fallback immediately
+    try {
+      const localResp = await fetch(`gs-${CURRENT_SHEET}.json`);
+      if (localResp.ok) {
+        const localText = await localResp.text();
+        const data = parseSheetJson(localText);
+        console.log('Loaded from local fallback:', CURRENT_SHEET);
+        return data.table?.rows || [];
+      }
+    } catch (err2) {
+      console.error('Local fallback also failed:', err2);
+      return [];
+    }
+    return [];
+  }
+  if (!response.ok) {
+    console.error('Response not OK:', response.status, response.statusText);
+    showStatus(`Unable to load sheet ${CURRENT_SHEET}: ${response.status}. Trying local fallback...`, true);
+    // try local fallback
+    try {
+      const localResp = await fetch(`gs-${CURRENT_SHEET}.json`);
+      if (localResp.ok) {
+        const localText = await localResp.text();
+        const data = parseSheetJson(localText);
+        console.log('Loaded from local fallback after failed network:', CURRENT_SHEET);
+        return data.table?.rows || [];
+      }
+    } catch (err3) {
+      console.error('Local fallback also failed:', err3);
+      return [];
+    }
+    return [];
+  }
+  const text = await response.text();
+  let data;
+  try {
+    data = parseSheetJson(text);
+    console.log('Parsed live sheet, rows:', data.table?.rows?.length || 0);
+  } catch (err) {
+    console.error('Sheet parse error', err);
+    showStatus(`Failed to parse ${CURRENT_SHEET} sheet response. Trying local fallback...`, true);
+    // try local fallback file
+    try {
+      const localResp = await fetch(`gs-${CURRENT_SHEET}.json`);
+      if (localResp.ok) {
+        const localText = await localResp.text();
+        data = parseSheetJson(localText);
+        console.log('Loaded from local fallback after parse error');
+      } else {
+        return [];
+      }
+    } catch (err2) {
+      console.error('Local fallback parse failed', err2);
+      return [];
+    }
+  }
+  // If the live sheet returned only headers or no usable rows, try a local fallback
+  if (!data.table || !Array.isArray(data.table.rows) || data.table.rows.length <= 1) {
+    console.log('Live sheet has no data, trying local fallback');
+    try {
+      const localResp = await fetch(`gs-${CURRENT_SHEET}.json`);
+      if (localResp.ok) {
+        const localText = await localResp.text();
+        data = parseSheetJson(localText);
+        console.log('Loaded from local fallback, rows:', data.table?.rows?.length || 0);
+      }
+    } catch (err3) {
+      console.warn('No local fallback available', err3);
+    }
+  }
+  if (!data.table || !Array.isArray(data.table.rows)) {
+    console.error('No valid data after all attempts');
+    return [];
+  }
+  console.log('Returning rows:', data.table.rows.length);
+  return data.table.rows;
+}
+
+async function geocodeCityCountry(city, country) {
+  const query = `${city}, ${country}`;
+  const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(query)}`;
+
+  try {
+    const response = await fetch(url, {
+      headers: { Accept: 'application/json' }
+    });
+    if (!response.ok) return null;
+    const results = await response.json();
+    if (!Array.isArray(results) || results.length === 0) return null;
+    return {
+      lat: parseFloat(results[0].lat),
+      lng: parseFloat(results[0].lon)
+    };
+  } catch (error) {
+    console.warn('Geocoding failed:', query, error);
+    return null;
+  }
+}
+
+// removed: lookupKnownCoordinates — coordinates are read from the sheet
+
+function normalizeLongitudes(lngs) {
+  // Robustly shift longitudes so they are within +/-180 degrees of a reference
+  if (!Array.isArray(lngs) || lngs.length === 0) return [];
+  // Use the first longitude as reference and shift others to be within +/-180 of it
+  const ref = lngs[0];
+  return lngs.map(lon => {
+    let v = lon;
+    while (v - ref > 180) v -= 360;
+    while (v - ref < -180) v += 360;
+    return v;
+  });
+}
+
+function projectToLayout(nodes) {
+  const lngs = nodes.map(n => n.lng);
+  const lats = nodes.map(n => n.lat);
+  const normLngs = normalizeLongitudes(lngs);
+  const minLng = Math.min(...normLngs);
+  const maxLng = Math.max(...normLngs);
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const lngRange = Math.max(maxLng - minLng, 1);
+  const latRange = Math.max(maxLat - minLat, 1);
+  const padX = 20 / EXPORT_SIZE * CANVAS_WIDTH;
+  const padY = 20 / EXPORT_SIZE * CANVAS_HEIGHT;
+
+  const anchors = nodes.map((node, index) => {
+    const x = Math.min(1, Math.max(0, (normLngs[index] - minLng) / lngRange));
+    const y = Math.min(1, Math.max(0, (maxLat - node.lat) / latRange));
+    return {
+      x: padX / CANVAS_WIDTH + (1 - (padX * 2) / CANVAS_WIDTH) * x,
+      y: padY / CANVAS_HEIGHT + (1 - (padY * 2) / CANVAS_HEIGHT) * y
+    };
+  });
+
+  const positions = anchors.map(a => ({ x: a.x, y: a.y }));
+  const minDistance = 14 * spreadFactor;
+  const repulsionStrength = 0.08;
+  const anchorStrength = 0.12;
+  const iterations = 80;
+
+  for (let iter = 0; iter < iterations; iter += 1) {
+    for (let i = 0; i < nodes.length; i += 1) {
+      for (let j = i + 1; j < nodes.length; j += 1) {
+        const a = positions[i];
+        const b = positions[j];
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let dist = Math.hypot(dx, dy);
+        if (dist < 0.001) {
+          dist = 0.001;
+          dx = 0.001;
+          dy = 0;
+        }
+        const desired = minDistance / Math.min(CANVAS_WIDTH, CANVAS_HEIGHT);
+        if (dist < desired) {
+          const push = (desired - dist) / dist * repulsionStrength;
+          const moveX = dx * push;
+          const moveY = dy * push;
+          positions[i].x -= moveX;
+          positions[i].y -= moveY;
+          positions[j].x += moveX;
+          positions[j].y += moveY;
+        }
+      }
+    }
+
+    for (let i = 0; i < nodes.length; i += 1) {
+      positions[i].x += (anchors[i].x - positions[i].x) * anchorStrength;
+      positions[i].y += (anchors[i].y - positions[i].y) * anchorStrength;
+      positions[i].x = Math.min(1 - padX / CANVAS_WIDTH, Math.max(padX / CANVAS_WIDTH, positions[i].x));
+      positions[i].y = Math.min(1 - padY / CANVAS_HEIGHT, Math.max(padY / CANVAS_HEIGHT, positions[i].y));
+    }
+  }
+
+  const outerMinX = padX / CANVAS_WIDTH;
+  const outerMaxX = 1 - padX / CANVAS_WIDTH;
+  const outerMinY = padY / CANVAS_HEIGHT;
+  const outerMaxY = 1 - padY / CANVAS_HEIGHT;
+
+  const minX = Math.min(...positions.map(p => p.x));
+  const maxX = Math.max(...positions.map(p => p.x));
+  const minY = Math.min(...positions.map(p => p.y));
+  const maxY = Math.max(...positions.map(p => p.y));
+  const rangeX = Math.max(maxX - minX, 0.001);
+  const rangeY = Math.max(maxY - minY, 0.001);
+  const stretch = Math.max(0, Math.min(1, (spreadFactor - 1) / 1));
+
+  nodes.forEach((node, index) => {
+    const rawX = positions[index].x;
+    const rawY = positions[index].y;
+    const stretchedX = outerMinX + ((rawX - minX) / rangeX) * (outerMaxX - outerMinX);
+    const stretchedY = outerMinY + ((rawY - minY) / rangeY) * (outerMaxY - outerMinY);
+    const x = rawX + (stretchedX - rawX) * stretch;
+    const y = rawY + (stretchedY - rawY) * stretch;
+    node.x = Math.min(outerMaxX, Math.max(outerMinX, x)) * CANVAS_WIDTH;
+    node.y = Math.min(outerMaxY, Math.max(outerMinY, y)) * CANVAS_HEIGHT;
+  });
+}
+
+function showStatus(text, isError = false) {
+  let el = document.getElementById('status-message');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'status-message';
+    const wrapper = document.querySelector('.wrapper');
+    if (wrapper) {
+      wrapper.insertBefore(el, wrapper.firstChild);
+    } else {
+      document.body.appendChild(el);
+    }
+  }
+  el.textContent = text;
+  el.classList.toggle('is-error', isError);
+}
+
+async function loadNodesFromSheet() {
+  const rows = await fetchSheetRows();
+  console.log('loadNodesFromSheet: got rows:', rows.length);
+  const nodes = [];
+  for (let i = 1; i < rows.length; i += 1) {
+    const row = rows[i].c || [];
+    const city = formatRowValue(row[0]);
+    const country = formatRowValue(row[1]);
+    if (!city || !country) continue;
+
+    const label = `${city}, ${country}`;
+
+    // Prefer lat/lng provided in the sheet (columns C and D)
+    const latStr = formatRowValue(row[2]);
+    const lngStr = formatRowValue(row[3]);
+    let lat = latStr ? parseFloat(latStr) : NaN;
+    let lng = lngStr ? parseFloat(lngStr) : NaN;
+
+    let coords = null;
+    if (!Number.isNaN(lat) && !Number.isNaN(lng)) {
+      coords = { lat, lng };
+      console.log('Using sheet coordinates for', label, coords);
+    } else {
+      // fallback to geocoding (rate-limited); if that fails, use region default
+      coords = await geocodeCityCountry(city, country);
+      if (!coords) {
+        console.warn('Geocoding failed for', label, '; using region default');
+        coords = REGION_DEFAULTS[CURRENT_SHEET] || REGION_DEFAULTS['Oceania'];
+      }
+      // small delay to be polite to geocoding service
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    nodes.push({ label, lat: coords.lat, lng: coords.lng });
+  }
+  console.log('loadNodesFromSheet: returning', nodes.length, 'nodes');
+  return nodes;
+}
+
+function haversineDistance(a, b) {
+  const R = 6371;
+  const toRad = d => d * Math.PI / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const sinDLat = Math.sin(dLat / 2);
+  const sinDLng = Math.sin(dLng / 2);
+  const h = sinDLat * sinDLat + Math.cos(lat1) * Math.cos(lat2) * sinDLng * sinDLng;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+function buildConnections(nodes) {
+  const neighborLists = nodes.map((n, idx) => {
+    return nodes
+      .map((o, oidx) => ({ id: oidx, d: haversineDistance(n, o) }))
+      .filter(o => o.id !== idx)
+      .sort((a, b) => a.d - b.d);
+  });
+
+  const connectionCount = new Array(nodes.length).fill(0);
+  const edgeSet = new Set();
+  const edges = [];
+
+  function edgeKey(a, b) {
+    return a < b ? `${a}-${b}` : `${b}-${a}`;
+  }
+
+  function tryConnect(a, b) {
+    const key = edgeKey(a, b);
+    if (edgeSet.has(key)) return false;
+    if (connectionCount[a] >= MAX_CONNECTIONS) return false;
+    if (connectionCount[b] >= MAX_CONNECTIONS) return false;
+    edgeSet.add(key);
+    edges.push([a, b]);
+    connectionCount[a]++;
+    connectionCount[b]++;
+    return true;
+  }
+
+  nodes.forEach((n, idx) => {
+    for (const cand of neighborLists[idx]) {
+      if (tryConnect(idx, cand.id)) break;
+    }
+  });
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    nodes.forEach((n, idx) => {
+      if (connectionCount[idx] >= MIN_CONNECTIONS) return;
+      for (const cand of neighborLists[idx]) {
+        if (tryConnect(idx, cand.id)) {
+          changed = true;
+          break;
+        }
+      }
+    });
+  }
+
+  const allPairs = [];
+  nodes.forEach((n, idx) => {
+    neighborLists[idx].forEach(cand => {
+      if (idx < cand.id) {
+        allPairs.push({ a: idx, b: cand.id, d: cand.d });
+      }
+    });
+  });
+  allPairs.sort((p, q) => p.d - q.d);
+
+  for (const pair of allPairs) {
+    if (connectionCount[pair.a] < MAX_CONNECTIONS && connectionCount[pair.b] < MAX_CONNECTIONS) {
+      tryConnect(pair.a, pair.b);
+    }
+  }
+
+  return edges;
+}
+
+function toMapCoords(n) {
+  return [CANVAS_HEIGHT - n.y, n.x];
+}
+
+const map = L.map('map', {
+  attributionControl: false,
+  zoomControl: false,
+  crs: L.CRS.Simple
+}).setView([70, 50], 1);
+
+const layerGroup = L.layerGroup().addTo(map);
+let currentNodes = [];
+let currentEdges = [];
+let spreadFactor = 1;
+
+function drawNodes() {
+  layerGroup.clearLayers();
+  currentEdges = buildConnections(currentNodes);
+
+  currentEdges.forEach(([aId, bId]) => {
+    const a = currentNodes[aId];
+    const b = currentNodes[bId];
+    L.polyline([toMapCoords(a), toMapCoords(b)], {
+      color: currentTheme.line,
+      weight: LINE_WEIGHT,
+      opacity: 0.8
+    }).addTo(layerGroup);
+  });
+
+  currentNodes.forEach(n => {
+    const pos = toMapCoords(n);
+    L.circleMarker(pos, {
+      radius: NODE_RADIUS_PX,
+      color: currentTheme.node,
+      fillColor: currentTheme.node,
+      fillOpacity: 1,
+      weight: 0
+    }).addTo(layerGroup).bindPopup(`<b>${n.label}</b>`);
+
+    L.marker(pos, {
+      icon: L.divIcon({
+        className: 'node-label',
+        html: `<div class="location-label-text" style="color:${currentTheme.label}">${n.label.replace(/,\s*/, ',<br>')}</div>`,
+        iconSize: [0, 0]
+      }),
+      interactive: false
+    }).addTo(layerGroup);
+  });
+
+  const bounds = L.latLngBounds(currentNodes.map(toMapCoords));
+  map.fitBounds(bounds, { padding: [0, 0] });
+}
+
+async function renderMap() {
+  showStatus(`Loading ${CURRENT_SHEET} node data from spreadsheet...`);
+  if (currentNodes.length === 0) {
+    currentNodes = await loadNodesFromSheet();
+    console.log('renderMap: loaded', currentNodes.length, 'nodes');
+  }
+  if (currentNodes.length === 0) {
+    showStatus(`No nodes found in the ${CURRENT_SHEET} sheet or geocoding failed. Check console for details.`, true);
+    return;
+  }
+
+  projectToLayout(currentNodes);
+  drawNodes();
+  showStatus(`Loaded ${currentNodes.length} nodes from the ${CURRENT_SHEET} sheet.`);
+}
+
+function buildSvgString() {
+  const width = EXPORT_SIZE;
+  const height = EXPORT_SIZE;
+  const strokeWidth = 2;
+  const circleRadius = 12;
+  const labelFontSize = 28;
+  const theme = currentTheme || THEMES.default;
+
+  const drawLine = ([x1, y1], [x2, y2]) =>
+    `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${theme.line}" stroke-width="${strokeWidth}" opacity="0.8" />`;
+
+  const drawNode = (x, y) =>
+    `<circle cx="${x}" cy="${y}" r="${circleRadius}" fill="${theme.node}" />`;
+
+  const drawLabel = (x, y, label) => {
+    const parts = label.split(', ');
+    return `<text x="${x + 18}" y="${y + 8}" fill="${theme.label}" font-family="IBM Plex Mono, monospace" font-size="${labelFontSize}" text-anchor="start">
+      <tspan x="${x + 18}" dy="0">${parts[0]}</tspan>
+      <tspan x="${x + 18}" dy="${labelFontSize * 1.1}">${parts[1] || ''}</tspan>
+    </text>`;
+  };
+
+  const scaleX = x => (x / CANVAS_WIDTH) * width;
+  const scaleY = y => (y / CANVAS_HEIGHT) * height;
+
+  const edgeMarkup = currentEdges.map(([aId, bId]) => {
+    const a = currentNodes[aId];
+    const b = currentNodes[bId];
+    return drawLine([scaleX(a.x), scaleY(a.y)], [scaleX(b.x), scaleY(b.y)]);
+  }).join('');
+
+  const nodeMarkup = currentNodes.map(n => {
+    const x = scaleX(n.x);
+    const y = scaleY(n.y);
+    return `${drawNode(x, y)}${drawLabel(x, y, n.label)}`;
+  }).join('');
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+  <rect width="100%" height="100%" fill="${theme.background}" />
+  ${edgeMarkup}
+  ${nodeMarkup}
+</svg>`;
+}
+
+function downloadBlob(filename, blob) {
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(link.href);
+}
+
+function exportSvg() {
+  if (currentNodes.length === 0) return;
+  const svg = buildSvgString();
+  const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+  downloadBlob(`${CURRENT_SHEET}-nodemap.svg`, blob);
+}
+
+function exportJpg() {
+  if (currentNodes.length === 0) return;
+  const svg = buildSvgString();
+  const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const img = new Image();
+  img.onload = () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = EXPORT_SIZE;
+    canvas.height = EXPORT_SIZE;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = currentTheme.background;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0);
+    canvas.toBlob(jpgBlob => {
+      if (jpgBlob) downloadBlob(`${CURRENT_SHEET}-nodemap.jpg`, jpgBlob);
+      URL.revokeObjectURL(url);
+    }, 'image/jpeg', 0.95);
+  };
+  img.onerror = () => {
+    console.error('SVG to JPG conversion failed');
+    URL.revokeObjectURL(url);
+  };
+  img.src = url;
+}
+
+const spreadSlider = document.getElementById('spread-slider');
+const spreadValue = document.getElementById('spread-value');
+const exportSvgButton = document.getElementById('export-svg');
+const exportJpgButton = document.getElementById('export-jpg');
+
+spreadSlider.addEventListener('input', event => {
+  spreadFactor = parseFloat(event.target.value);
+  spreadValue.textContent = spreadFactor.toFixed(2);
+  if (currentNodes.length > 0) {
+    projectToLayout(currentNodes);
+    drawNodes();
+  }
+});
+
+exportSvgButton.addEventListener('click', exportSvg);
+exportJpgButton.addEventListener('click', exportJpg);
+
+// Sheet selection buttons
+const sheetButtons = document.querySelectorAll('.sheet-btn');
+console.log('Sheet buttons found:', sheetButtons.length);
+function setSheet(name) {
+  console.log('setSheet called with:', name);
+  if (CURRENT_SHEET === name) {
+    console.log('Already on sheet:', name);
+    return;
+  }
+  showStatus(`Switching to ${name}...`);
+  CURRENT_SHEET = name;
+  applyTheme(name);
+  sheetButtons.forEach(b => b.classList.toggle('active', b.dataset.sheet === name));
+  currentNodes = [];
+  layerGroup.clearLayers();
+  // small delay so UI updates before fetch starts
+  setTimeout(() => {
+    console.log('Calling renderMap for sheet:', name);
+    renderMap();
+  }, 50);
+}
+sheetButtons.forEach(btn => {
+  btn.addEventListener('click', () => {
+    console.log('Button clicked:', btn.dataset.sheet);
+    setSheet(btn.dataset.sheet);
+  });
+});
+applyTheme(CURRENT_SHEET);
+console.log('Sheet button listeners attached. CURRENT_SHEET =', CURRENT_SHEET);
+
+renderMap();
+</script>
+</body>
+</html>
